@@ -4,82 +4,80 @@
 #include <time.h>
 #include <sys/time.h>
 
-// Returns a random value between -1 and 1
-double getRand(unsigned int *seed) {
-    return (double) rand_r(seed) * 2 / (double) (RAND_MAX) - 1;
-}
+static const long Num_To_Add = 100000000;
+static const double Scale = 10.0 / RAND_MAX;
 
-long double Calculate_Pi_Sequential(long long number_of_tosses) {
-    unsigned int seed = (unsigned int) time(NULL);
-    //Bonaventure Biko::3/14/2019
-    //start of my program
-    double pi_estimate = 0;
-    int number_in_circle = 0;
-    //for debugging purposes only: int loop_count = 0;
-
-    for (int toss=0; toss<number_of_tosses;toss++)
-    {
-        double x = getRand(&seed);
-        double y = getRand(&seed);
-        double distance_squared = (x*x)+(y*y);
-        if (distance_squared <= 1) number_in_circle++;
-        //loop_count ++;
+long add_serial(const char *numbers) {
+    long sum = 0;
+    for (long i = 0; i < Num_To_Add; i++) {
+        sum += numbers[i];
     }
-    pi_estimate= 4.0000*number_in_circle/((double) number_of_tosses);//pi estimate value
-    //printf("LoopCount= %i times\n",loop_count);
-    //Bonaventure Biko::3/14/2019
-    //end of my program
-    return pi_estimate;
+    return sum;
 }
 
-long double Calculate_Pi_Parallel(long long number_of_tosses) {
-    double pi_estimate = 0;
-    int number_in_circle = 0;
-    //original : #pragma omp parallel num_threads(omp_get_max_threads())
+
+long add_parallel(const char *numbers) {
+    long sum = 0;
+    //Start of my Code
+    //Bonaventure Biko:: March 28, 2019
+    long number_of_threads = 10; //the number of threads allocated
+    long my_array_size = Num_To_Add/number_of_threads; //the size of each array
+
+    #pragma omp parallel num_threads(number_of_threads) //reduction (+:sum)
     {
-        unsigned int seed = (unsigned int) time(NULL) + (unsigned int) omp_get_thread_num();
-        //Bonaventure Biko::3/14/2019
-        //start of my program
-        //============================
-        int loop_count = 0;
-        #pragma omp parallel for reduction (+:number_in_circle)
-        for (int toss=0; toss<number_of_tosses;toss++)
-        {
-            double x = getRand(&seed);
-            double y = getRand(&seed);
-            double distance_squared = (x*x)+(y*y);
-            if (distance_squared <= 1) number_in_circle++;
-            //loop_count ++;
+        long my_first_i = omp_get_thread_num()*my_array_size;
+        long my_last_i = my_first_i+my_array_size;
+        long  my_sum = 0;
+        //long my_cumm_sum = 0;
+
+        for (long i = my_first_i; i < my_last_i; i++) {
+            my_sum += numbers[ i];
+
         }
-        pi_estimate= 4.0000*number_in_circle/((double) number_of_tosses);//pi estimate value
-        //printf("LoopCount= %i times\n",loop_count);
-        //Bonaventure Biko::3/14/2019::
-        //end of my program
+        //printf("\n%d",my_sum);
 
+
+        #pragma omp critical
+        sum += my_sum;
+        //my_cumm_sum = my_sum[omp_get_thread_num()]+my_sum[omp_get_thread_num()+1];
     }
-    return pi_estimate;
+    //printf("\n");
+    //End of my Code
+    return sum;
 }
 
 int main() {
-    struct timeval start, end;
+    char *numbers = malloc(sizeof(long) * Num_To_Add);
 
-    long long num_tosses = 10000000;//original number: 10000000
+    long chunk_size = Num_To_Add / omp_get_max_threads();
+#pragma omp parallel num_threads(omp_get_max_threads())
+    {
+        int p = omp_get_thread_num();
+        unsigned int seed = (unsigned int) time(NULL) + (unsigned int) p;
+        long chunk_start = p * chunk_size;
+        long chunk_end = chunk_start + chunk_size;
+        for (long i = chunk_start; i < chunk_end; i++) {
+            numbers[i] = (char) (rand_r(&seed) * Scale);
+        }
+    }
+
+    struct timeval start, end;
 
     printf("Timing sequential...\n");
     gettimeofday(&start, NULL);
-    long double sequential_pi = Calculate_Pi_Sequential(num_tosses);
+    long sum_s = add_serial(numbers);
     gettimeofday(&end, NULL);
-    printf("Took %f seconds\n\n", end.tv_sec - start.tv_sec + (double) (end.tv_usec - start.tv_usec) / num_tosses);
+    printf("Took %f seconds\n\n", end.tv_sec - start.tv_sec + (double) (end.tv_usec - start.tv_usec) / 1000000);
 
     printf("Timing parallel...\n");
     gettimeofday(&start, NULL);
-    long double parallel_pi = Calculate_Pi_Parallel(num_tosses);
+    long sum_p = add_parallel(numbers);
     gettimeofday(&end, NULL);
-    printf("Took %f seconds\n\n", end.tv_sec - start.tv_sec + (double) (end.tv_usec - start.tv_usec) / num_tosses);
+    printf("Took %f seconds\n\n", end.tv_sec - start.tv_sec + (double) (end.tv_usec - start.tv_usec) / 1000000);
 
-    // This will print the result to 10 decimal places
-    printf("π = %.10Lf (sequential)\n", sequential_pi);
-    printf("π = %.10Lf (parallel)", parallel_pi);
+    printf("Sum serial: %ld\nSum parallel: %ld", sum_s, sum_p);
 
+    free(numbers);
     return 0;
 }
+
