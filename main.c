@@ -1,83 +1,108 @@
+#include <math.h>
 #include <stdlib.h>
-#include <stdio.h>
-#include <omp.h>
 #include <time.h>
-#include <sys/time.h>
+#include <stdio.h>
 
-static const long Num_To_Add = 100000000;
-static const double Scale = 10.0 / RAND_MAX;
+typedef struct Complex {
+    long double real;
+    long double imaginary;
+} Complex;
+typedef unsigned char RGB_Pixel[3];
+static const unsigned char MAX_RGB_VAL = 255;
 
-long add_serial(const char *numbers) {
-    long sum = 0;
-    for (long i = 0; i < Num_To_Add; i++) {
-        sum += numbers[i];
+static const int Image_Width = 5000;//original 5000
+static const int Image_Height = 5000;//original 5000
+static const int Max_Iterations = 1000;//original 1000
+static const int number_of_threads = 10;
+
+static const Complex Focus_Point = {.real = -0.5, .imaginary = 0};
+static const long double Zoom = 2;
+
+// We use the coloring schema outlined from https://solarianprogrammer.com/2013/02/28/mandelbrot-set-cpp-11/
+void calc_colors(RGB_Pixel *colors) {
+    //Bonaventure Biko: 04-04-2019
+#pragma omp parallel for num_threads(number_of_threads) schedule(static,1)
+
+    for (int i = 0; i < Max_Iterations; i++) {
+        double t = (double) i / Max_Iterations;
+
+        colors[i][0] = (unsigned char) (9 * (1 - t) * t * t * t * MAX_RGB_VAL);
+        colors[i][1] = (unsigned char) (15 * (1 - t) * (1 - t) * t * t * MAX_RGB_VAL);
+        colors[i][2] = (unsigned char) (8.5 * (1 - t) * (1 - t) * (1 - t) * t * MAX_RGB_VAL);
     }
-    return sum;
-}
+};
 
+/* The Mandelbrot set is defined by all numbers which do not diverge for fc(z) = z^2 + c,
+ * where C is a complex number. Generally, we run the algorithm until we hit a cutoff number of iterations.
+ * We can end the iterations early if we know that the sum of the complex coefficients is <= 4.
+ * because if that happens we know it'll diverge.
+ *
+ * To draw the set, we map the real value to the x-axis, and the imaginary value to the y-axis.
+ * We then use the number of iterations to escape to calculate the color of the pixel
+ *
+ * To convert the resulting PPM, you may use http://www.imagemagick.org
+ */
 
-long add_parallel(const char *numbers) {
-    long sum = 0;
-    //Start of my Code
-    //Bonaventure Biko:: March 28, 2019
-    long number_of_threads = 10; //the number of threads allocated
-    long my_array_size = Num_To_Add/number_of_threads; //the size of each array
+int main(int argc, const char **argv) {
+    RGB_Pixel *pixels = malloc(sizeof(RGB_Pixel) * Image_Width * Image_Height);
 
-    #pragma omp parallel num_threads(number_of_threads) //reduction (+:sum)
-    {
-        long my_first_i = omp_get_thread_num()*my_array_size;
-        long my_last_i = my_first_i+my_array_size;
-        long  my_sum = 0;
-        //long my_cumm_sum = 0;
+    RGB_Pixel colors[Max_Iterations + 1];
+    calc_colors(colors);
+    colors[Max_Iterations][0] = MAX_RGB_VAL;
+    colors[Max_Iterations][1] = MAX_RGB_VAL;
+    colors[Max_Iterations][2] = MAX_RGB_VAL;
 
-        for (long i = my_first_i; i < my_last_i; i++) {
-            my_sum += numbers[ i];
+    // Calculate scaling values to map the bounds of the Mandelbrot area to the pixel grid
+    const Complex min_bounds = {.real = Focus_Point.real - Zoom, .imaginary = Focus_Point.imaginary - Zoom};
+    const Complex max_bounds = {.real = Focus_Point.real + Zoom, .imaginary = Focus_Point.imaginary + Zoom};
+    const Complex scale = {
+            .real = (max_bounds.real - min_bounds.real) / Image_Width,
+            .imaginary = (max_bounds.real - min_bounds.real) / Image_Height
+    };
 
+    // Loop through the image pixels
+    //Bonaventure Biko: 04-04-2019
+#pragma omp parallel for num_threads(number_of_threads) schedule(static,1)
+    for (int img_y = 0; img_y < Image_Height; img_y++) {
+        for (int img_x = 0; img_x < Image_Width; img_x++) {
+            // Find the value of C in the Mandelbrot range corresponding to this pixel
+            Complex c = {
+                    .real = min_bounds.real + img_x * scale.real,
+                    .imaginary = min_bounds.imaginary + img_y * scale.imaginary
+            };
+
+            // Check if the current pixel is in the Mandelbrot set
+            // We use the optimizations from https://randomascii.wordpress.com/2011/08/13/faster-fractals-through-algebra/
+            Complex z = {.real = 0, .imaginary = 0};
+            Complex z_squared = {.real = 0, .imaginary = 0};
+
+            int iterations = 0;
+            while (z_squared.real + z_squared.imaginary <= 4 && iterations < Max_Iterations) {
+                z.imaginary = z.real * z.imaginary;
+                z.imaginary += z.imaginary;
+                z.imaginary += c.imaginary;
+
+                z.real = z_squared.real - z_squared.imaginary + c.real;
+
+                z_squared.real = z.real * z.real;
+                z_squared.imaginary = z.imaginary * z.imaginary;
+
+                iterations++;
+            }
+
+            pixels[img_y * Image_Width + img_x][0] = colors[iterations][0];
+            pixels[img_y * Image_Width + img_x][1] = colors[iterations][1];
+            pixels[img_y * Image_Width + img_x][2] = colors[iterations][2];
         }
-        //printf("\n%d",my_sum);
-
-
-        #pragma omp critical
-        sum += my_sum;
-        //my_cumm_sum = my_sum[omp_get_thread_num()]+my_sum[omp_get_thread_num()+1];
-    }
-    //printf("\n");
-    //End of my Code
-    return sum;
-}
-
-int main() {
-    char *numbers = malloc(sizeof(long) * Num_To_Add);
-
-    long chunk_size = Num_To_Add / omp_get_max_threads();
-#pragma omp parallel num_threads(omp_get_max_threads())
-    {
-        int p = omp_get_thread_num();
-        unsigned int seed = (unsigned int) time(NULL) + (unsigned int) p;
-        long chunk_start = p * chunk_size;
-        long chunk_end = chunk_start + chunk_size;
-        for (long i = chunk_start; i < chunk_end; i++) {
-            numbers[i] = (char) (rand_r(&seed) * Scale);
-        }
     }
 
-    struct timeval start, end;
+    FILE *fp = fopen("MandelbrotSet.ppm", "wb");
+    fprintf(fp, "P6\n %d %d\n %d\n", Image_Width, Image_Height, MAX_RGB_VAL);
+    fwrite(pixels, sizeof(RGB_Pixel), Image_Width * Image_Width, fp);
+    fclose(fp);
 
-    printf("Timing sequential...\n");
-    gettimeofday(&start, NULL);
-    long sum_s = add_serial(numbers);
-    gettimeofday(&end, NULL);
-    printf("Took %f seconds\n\n", end.tv_sec - start.tv_sec + (double) (end.tv_usec - start.tv_usec) / 1000000);
-
-    printf("Timing parallel...\n");
-    gettimeofday(&start, NULL);
-    long sum_p = add_parallel(numbers);
-    gettimeofday(&end, NULL);
-    printf("Took %f seconds\n\n", end.tv_sec - start.tv_sec + (double) (end.tv_usec - start.tv_usec) / 1000000);
-
-    printf("Sum serial: %ld\nSum parallel: %ld", sum_s, sum_p);
-
-    free(numbers);
+    free(pixels);
+    free(colors);
+    
     return 0;
 }
-
